@@ -1,5 +1,5 @@
 
-<h2 class="sr-only">AI Portfolio Builder — chat to populate your portfolio in real time</h2>
+<h2 class="sr-only">AI Portfolio Builder powered by OpenRouter — chat to populate your portfolio</h2>
 <style>
 * { box-sizing: border-box; }
 .bar-fill { transition: width 0.6s cubic-bezier(.4,0,.2,1); }
@@ -12,8 +12,9 @@
 .dots span:nth-child(2){ animation-delay:0.2s; }
 .dots span:nth-child(3){ animation-delay:0.4s; }
 @keyframes blink { 0%,80%,100%{opacity:0.2} 40%{opacity:1} }
-input, textarea { outline:none; font-family:inherit; }
-input:focus { border-color:var(--color-border-primary) !important; }
+input, select { outline:none; font-family:inherit; }
+input:focus, select:focus { border-color:var(--color-border-primary) !important; }
+.key-row { display:flex; gap:8px; align-items:center; }
 </style>
 
 <div id="root" style="padding:1rem 0;min-height:580px;"></div>
@@ -22,19 +23,26 @@ input:focus { border-color:var(--color-border-primary) !important; }
 const portfolio = {
   name: "Your Name",
   tagline: "Tell me about yourself to get started ✨",
-  skills: [],
-  grades: [],
-  abilities: []
+  skills: [], grades: [], abilities: []
 };
-
 let chatHistory = [];
 let displayMsgs = [
-  { from:"ai", text:"Hey! 👋 I'm your portfolio AI. Just tell me about yourself — your skills, grades, or special abilities — and I'll build your portfolio as we chat!" }
+  { from:"ai", text:"Hey! 👋 Enter your OpenRouter API key above, pick a model, then tell me about yourself — I'll build your portfolio in real time!" }
 ];
 let loading = false;
 let currentView = "split";
+let apiKey = "";
+let selectedModel = "google/gemini-flash-1.5";
 
-const systemPrompt = () => `You are a portfolio-building AI for a student. The user describes themselves. Extract info and return ONLY valid JSON (no markdown, no backticks, no extra text):
+const MODELS = [
+  { id:"google/gemini-flash-1.5", label:"Gemini Flash 1.5 (fast & free)" },
+  { id:"google/gemini-2.0-flash-001", label:"Gemini 2.0 Flash" },
+  { id:"anthropic/claude-3.5-haiku", label:"Claude 3.5 Haiku" },
+  { id:"openai/gpt-4o-mini", label:"GPT-4o Mini" },
+  { id:"meta-llama/llama-3.1-8b-instruct", label:"Llama 3.1 8B (free)" },
+];
+
+const systemPrompt = () => `You are a portfolio-building AI for a student. The user describes themselves. Extract info and return ONLY valid JSON (no markdown, no backticks):
 {"name":string|null,"tagline":string|null,"skills":[{"name":string,"level":"beginner"|"intermediate"|"advanced","emoji":string}]|null,"grades":[{"subject":string,"score":string,"note":string|null}]|null,"abilities":[{"title":string,"desc":string,"emoji":string}]|null,"reply":string}
 Rules: only include keys with NEW info. Never duplicate existing entries. Keep descs concise. Be warm in reply.
 Current portfolio: ${JSON.stringify(portfolio)}`;
@@ -44,15 +52,14 @@ const levelC = {beginner:"var(--color-text-info)",intermediate:"var(--color-text
 const levelBg = {beginner:"var(--color-background-info)",intermediate:"var(--color-background-success)",advanced:"var(--color-background-warning)"};
 
 function initials(name) {
-  return name.split(" ").filter(Boolean).map(w=>w[0]).join("").toUpperCase().slice(0,2) || "?";
+  return name.split(" ").filter(Boolean).map(w=>w[0]).join("").toUpperCase().slice(0,2)||"?";
 }
 
 function render() {
-  const root = document.getElementById("root");
   const init = initials(portfolio.name);
 
   const portfolioPane = `
-    <div style="display:flex;flex-direction:column;gap:10px;overflow-y:auto;max-height:520px;padding-right:4px;">
+    <div style="display:flex;flex-direction:column;gap:10px;overflow-y:auto;max-height:460px;padding-right:4px;">
       <div style="background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:1rem 1.25rem;display:flex;align-items:center;gap:12px;">
         <div style="width:46px;height:46px;border-radius:50%;background:var(--color-background-info);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:500;color:var(--color-text-info);flex-shrink:0;">${init}</div>
         <div>
@@ -107,7 +114,7 @@ function render() {
     </div>`;
 
   const chatPane = `
-    <div style="display:flex;flex-direction:column;height:520px;background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;">
+    <div style="display:flex;flex-direction:column;height:460px;background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);overflow:hidden;">
       <div id="msgs" style="flex:1;overflow-y:auto;padding:1rem;display:flex;flex-direction:column;gap:10px;">
         ${displayMsgs.map(m=>`
           <div class="msg-bubble" style="display:flex;justify-content:${m.from==="user"?"flex-end":"flex-start"};">
@@ -119,26 +126,40 @@ function render() {
         <div id="msgEnd"></div>
       </div>
       <div style="padding:0.75rem;border-top:0.5px solid var(--color-border-tertiary);display:flex;gap:8px;">
-        <input id="chatInput" value="" placeholder="Tell me about yourself..." ${loading?"disabled":""} style="flex:1;font-size:13px;padding:8px 12px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-secondary);color:var(--color-text-primary);" />
-        <button id="sendBtn" class="send-btn" ${loading?"disabled":""} style="padding:8px 14px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-info);color:var(--color-text-info);font-size:13px;cursor:pointer;font-weight:500;">Send ↗</button>
+        <input id="chatInput" value="" placeholder="Tell me about yourself..." ${loading||!apiKey?"disabled":""} style="flex:1;font-size:13px;padding:8px 12px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-secondary);color:var(--color-text-primary);" />
+        <button id="sendBtn" class="send-btn" ${loading||!apiKey?"disabled":""} style="padding:8px 14px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-info);color:var(--color-text-info);font-size:13px;cursor:pointer;font-weight:500;">Send ↗</button>
       </div>
     </div>`;
 
-  root.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;padding-bottom:0.75rem;border-bottom:0.5px solid var(--color-border-tertiary);">
-      <div>
-        <p style="margin:0;font-size:14px;font-weight:500;color:var(--color-text-primary);">Portfolio Builder</p>
-        <p style="margin:0;font-size:11px;color:var(--color-text-secondary);">AI-powered · Chat to fill your portfolio · GitHub Pages ready</p>
+  document.getElementById("root").innerHTML = `
+    <div style="display:flex;flex-direction:column;gap:12px;">
+      <div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
+        <div class="key-row">
+          <i class="ti ti-key" style="font-size:16px;color:var(--color-text-secondary);" aria-hidden="true"></i>
+          <input id="keyInput" type="password" placeholder="Paste your OpenRouter API key (sk-or-...)" value="${apiKey}" style="flex:1;font-size:13px;padding:6px 10px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-primary);color:var(--color-text-primary);" />
+          <div style="width:10px;height:10px;border-radius:50%;background:${apiKey?"var(--color-background-success)":"var(--color-background-danger)"};flex-shrink:0;"></div>
+        </div>
+        <div class="key-row">
+          <i class="ti ti-cpu" style="font-size:16px;color:var(--color-text-secondary);" aria-hidden="true"></i>
+          <select id="modelSelect" style="flex:1;font-size:13px;padding:6px 10px;border-radius:var(--border-radius-md);border:0.5px solid var(--color-border-secondary);background:var(--color-background-primary);color:var(--color-text-primary);">
+            ${MODELS.map(m=>`<option value="${m.id}" ${m.id===selectedModel?"selected":""}>${m.label}</option>`).join("")}
+          </select>
+        </div>
       </div>
-      <div style="display:flex;gap:6px;">
-        <button class="tab-btn ${currentView==="portfolio"?"active":""}" onclick="setView('portfolio')">portfolio</button>
-        <button class="tab-btn ${currentView==="split"?"active":""}" onclick="setView('split')">split</button>
-        <button class="tab-btn ${currentView==="chat"?"active":""}" onclick="setView('chat')">chat</button>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <p style="margin:0;font-size:11px;color:var(--color-text-secondary);">AI Portfolio Builder · OpenRouter · GitHub Pages ready</p>
+        <div style="display:flex;gap:6px;">
+          <button class="tab-btn ${currentView==="portfolio"?"active":""}" onclick="setView('portfolio')">portfolio</button>
+          <button class="tab-btn ${currentView==="split"?"active":""}" onclick="setView('split')">split</button>
+          <button class="tab-btn ${currentView==="chat"?"active":""}" onclick="setView('chat')">chat</button>
+        </div>
       </div>
-    </div>
-    <div style="display:grid;grid-template-columns:${currentView==="split"?"1fr 1fr":"1fr"};gap:12px;align-items:start;">
-      ${currentView!=="chat"?portfolioPane:""}
-      ${currentView!=="portfolio"?chatPane:""}
+
+      <div style="display:grid;grid-template-columns:${currentView==="split"?"1fr 1fr":"1fr"};gap:12px;align-items:start;">
+        ${currentView!=="chat"?portfolioPane:""}
+        ${currentView!=="portfolio"?chatPane:""}
+      </div>
     </div>`;
 
   document.getElementById("msgEnd")?.scrollIntoView({behavior:"smooth"});
@@ -146,13 +167,21 @@ function render() {
   document.getElementById("chatInput")?.addEventListener("keydown", e => {
     if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); sendMsg(); }
   });
+  document.getElementById("keyInput")?.addEventListener("input", e => {
+    apiKey = e.target.value.trim();
+    const dot = e.target.parentElement.querySelector("div[style*='border-radius:50%']");
+    if(dot) dot.style.background = apiKey ? "var(--color-background-success)" : "var(--color-background-danger)";
+  });
+  document.getElementById("modelSelect")?.addEventListener("change", e => {
+    selectedModel = e.target.value;
+  });
 }
 
 function setView(v) { currentView=v; render(); }
 
 async function sendMsg() {
   const inp = document.getElementById("chatInput");
-  if(!inp||!inp.value.trim()||loading) return;
+  if(!inp||!inp.value.trim()||loading||!apiKey) return;
   const txt = inp.value.trim();
   inp.value="";
   displayMsgs.push({from:"user",text:txt});
@@ -160,18 +189,25 @@ async function sendMsg() {
   loading=true; render();
 
   try {
-    const res = await fetch("https://api.anthropic.com/v1/messages",{
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions",{
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization":`Bearer ${apiKey}`,
+        "HTTP-Referer":"https://portfolio.github.io",
+        "X-Title":"AI Portfolio Builder"
+      },
       body:JSON.stringify({
-        model:"claude-sonnet-4-20250514",
-        max_tokens:1000,
-        system:systemPrompt(),
-        messages:chatHistory
+        model: selectedModel,
+        messages:[
+          {role:"system",content:systemPrompt()},
+          ...chatHistory
+        ]
       })
     });
     const data = await res.json();
-    const raw = data.content?.[0]?.text||"{}";
+    if(data.error) throw new Error(data.error.message);
+    const raw = data.choices?.[0]?.message?.content||"{}";
     let parsed;
     try { parsed=JSON.parse(raw.replace(/```json\n?|```/g,"").trim()); }
     catch { parsed={reply:raw}; }
@@ -184,8 +220,8 @@ async function sendMsg() {
 
     chatHistory.push({role:"assistant",content:raw});
     displayMsgs.push({from:"ai",text:parsed.reply||"Portfolio updated!"});
-  } catch {
-    displayMsgs.push({from:"ai",text:"Something went wrong, please try again!"});
+  } catch(err) {
+    displayMsgs.push({from:"ai",text:`Error: ${err.message||"Something went wrong. Check your API key and try again."}`});
   }
   loading=false; render();
 }
